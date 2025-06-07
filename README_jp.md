@@ -6,7 +6,7 @@
 ## 1. はじめに
 
 このソフトウェア(`tiny-bleKeyboard`)は、M5Stack CardputerをBluetoothキーボードとして使用するためのものです。
-
+すべての印刷キーが実装されています。また、他の便利なキーも実装しています。そのため、Carduterをほぼ標準の小さなBluetoothキーボードとして使用できます。
 
 主な機能：
 *   標準的なキー入力、修飾キー（Shift, Ctrl, Alt, Opt）の送信
