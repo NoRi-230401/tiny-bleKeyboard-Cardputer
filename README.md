@@ -6,7 +6,7 @@
 ## 1. Introduction
 
 This software (`tiny-bleKeyboard`) is for using the M5Stack Cardputer as a Bluetooth keyboard.
-All printed keys are implemented. We've also implemented other useful keys. So you can use the Carduter as a nearly standard tiny Bluetooth keyboard.
+All printed keys are implemented. We've also implemented other useful keys. So you can use the Cardputer as a nearly standard tiny Bluetooth keyboard.
 
 
 Main features:
