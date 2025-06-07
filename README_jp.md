@@ -3,6 +3,16 @@
 
 # Cardputer用 Bluetoothキーボード 取扱説明書
 
+## 0. 変更履歴
+
+*   v101 2025-06-07
+    *   initial release
+*   v102 2025-06-08 
+    *   **Cursor Moving Mode**　から　`Insert`, `PrintScreen` Keyを削除
+
+---
+
+
 ## 1. はじめに
 
 このソフトウェア(`tiny-bleKeyboard`)は、M5Stack CardputerをBluetoothキーボードとして使用するためのものです。
@@ -143,8 +153,6 @@ Fnキーと特定のキーを同時に押すことで、以下の特殊機能を
 | [ (左角括弧)    | End            |
 | = (イコール)    | Page Up        |
 | ] (右角括弧)    | Page Down      |
-| \ (バックスラッシュ) | Insert         |
-| ' (アポストロフィ) | Print Screen   |
 
 ![カーソル移動モード時の割当キー](images/04a-cardputer-gazo.jpg)<br>
 ＊カーソル移動モード時の割当キー
