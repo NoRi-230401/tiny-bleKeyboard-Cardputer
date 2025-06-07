@@ -169,17 +169,35 @@ Fnキーと特定のキーを同時に押すことで、以下の特殊機能を
 ディープスリープモードからは、Cardputerの`SPACE`キーを押すか、`BtnG0`を押すことで復帰します。
 
 ## 7. アプリの切替え
+Cardputer用のLauncherソフトを使用してSDカード上の複数のBINファイルのアプリを切替えて使用することができます。
+本ソフトのBINファイルは、GitHubのBINSフォルダ下から取得してください。次の２種類のLauncherソフトで動作を確認しています。
 
-M5Stack-SD-Updaterに対応しています。SDカード上のBINファイルで提供された他のアプリに切替えることができます。
+### (1) M5Stack-SD-Updater
 
 1.  **準備**:
-    *   このソフトを提供しているGitHubのBINSフォルダ下のファイル (`menu.bin`など) を用意します。
-    *   microSDカードのルートディレクトリに、`menu.bin`およびアプリのBINファイルをコピーします。
+    *   事前に、M5Stack-SD-Updater対応ソフト（例えば、本ソフト）をM5Burnerまたは、vsCodeにてコンパイルしてCardputerにインストールしてください。
+    *   BINSフォルダ下のファイル (`menu.bin`とアプリ `bleKeyboard.bin`など) を用意します。
+    *   microSDカードのルートディレクトリに、BINファイルをコピーします。
 2.  **アプリ切替え手順**:
     *   Cardputerの電源がオフの状態で、microSDカードを挿入します。
     *   Cardputerの 'a' キーを押しながら電源を入れます。
     *   SD上の`menu.bin`（M5Stack-SD-Updaterのメニュー画面）が起動するので、画面の指示に従ってファイルを選択してください。
     *   新しいアプリがLoadingされ、完了すると自動的に再起動します。
+
+### (2) M5Launcher Cardputer
+M5Launcher Cardputer v2.3.10で確認しました。
+
+1.  **準備**:
+    *   事前にM5Burnerで、`M5Launcher`のファームウエアをCardputerにインストールしてください。
+    *   BINSフォルダ下のBINファイル (`bleKeyboard.bin`) を用意します。
+    *   microSDカードに、BINファイルをコピーします。
+
+2.  **アプリ切替え手順**:
+    *   Cardputerの電源がオフの状態で、microSDカードを挿入します。
+    *   M5Launcherが起動したらすぐにリターンキーを押し、その後、画面でSDを選択してアプリ用のBINファイルを選択してください。
+    *   Installを選択すると新しいアプリがインストールされ、完了すると自動的に再起動します。
+
+
 
 ## 8. その他
 

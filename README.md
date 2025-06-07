@@ -169,16 +169,35 @@ To wake from deep sleep mode, press the `SPACE` key or `BtnG0` on the Cardputer.
 
 ## 7. Switching Applications
 
-Supports M5Stack-SD-Updater. You can switch to other applications provided as BIN files on an SD card.
+You can use the Cardputer Launcher software to switch between apps in multiple BIN files on the SD card.
+Please obtain the BIN file for this software from the BINS folder on GitHub. Operation has been confirmed with the following two types of Launcher software.
 
-1.  **Preparation**:
-    *   Prepare files from the BINS folder of the GitHub repository providing this software (e.g., `menu.bin`).
-    *   Copy `menu.bin` and the application's BIN file to the root directory of a microSD card.
-2.  **Application Switching Procedure**:
-    *   With the Cardputer powered off, insert the microSD card.
-    *   Turn on the Cardputer while pressing the 'a' key.
-    *   `menu.bin` (M5Stack-SD-Updater menu screen) on the SD card will start, so follow the on-screen instructions to select the file.
-    *   The new application will be loaded, and it will automatically restart upon completion.
+### (1) M5Stack-SD-Updater
+
+1. **Preparation**:
+* Compile the M5Stack-SD-Updater compatible software (for example, this software) with vsCode in advance or M5Burner used , install the firmware on the Cardputer.
+* Prepare the files under the BINS folder (`menu.bin` and the app `bleKeyboard.bin`, etc.).
+* Copy the BIN file to the root directory of the microSD card.
+
+2. **App switching procedure**:
+* Insert the microSD card while the Cardputer is turned off.
+* Turn on the power while holding down the 'a' key on the Cardputer.
+* The `menu.bin` on the SD card (the M5Stack-SD-Updater menu screen) will start, so follow the instructions on the screen to select the file.
+* The new app will be loaded, and the device will automatically restart when it is complete.
+
+### (2) M5Launcher Cardputer
+Confirmed with M5Launcher Cardputer v2.3.10.
+
+1. **Preparation**:
+* Install the firmware of `M5Launcher` to Cardputer in advance with M5Burner.
+* Prepare the BIN file (`bleKeyboard.bin`) under the BINS folder.
+* Copy the BIN file to the microSD card.
+
+2. **App Switching Procedure**:
+* Insert the microSD card while the Cardputer is turned off.
+* Press the return key as soon as M5Launcher starts up, then select SD on the screen and select the BIN file for the app.
+* Select Install to install the new app and automatically restart when complete.
+
 
 ## 8. Others
 
