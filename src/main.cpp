@@ -13,7 +13,7 @@
 #include <M5StackUpdater.h>
 #include <esp_sleep.h>     // Added for Deep Sleep
 #include <driver/gpio.h>   // Added for gpio_pullup_en
-#include <driver/adc.h>    // Added for adc_power_off
+// #include <driver/adc.h>    // Added for adc_power_off
 #include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
 #include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
 #include <algorithm>
@@ -510,7 +510,7 @@ void dispInit()
   const char *L1Str = "            bat.   %";
   //-------------------"01234567890123456789"------------------;
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  dispLx(1, L1Str); // L1Str is now const char*
+  dispLx(1, L1Str);
   dispBatteryLevel();
 
   //  L2 : Fn1 to Fn3 title -----------------------------------
@@ -643,7 +643,7 @@ void m5stack_begin()
 }
 
 // ------------------------------------------------------------------------
-// SDU_lobby :  lobby for SD-Updater
+// SDU_lobby :  lobby for M5Stack-SD-Updater
 // ------------------------------------------------------------------------
 // load '/menu.bin' on SD, if key'a' pressed at booting.
 // 'menu.bin' for Cardputer is involved in BINS folder at this github site
