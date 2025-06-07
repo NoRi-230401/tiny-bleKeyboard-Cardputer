@@ -8,7 +8,7 @@
 *   v101 2025-06-07
     *   initial release
 *   v102 2025-06-08 
-    *   Cursor Moving Modeから　`Insert`, `PrintScreen` Keyを削除
+    *   カーソル移動モードから　`Insert`, `PrintScreen` Keyを削除
 
 ---
 
