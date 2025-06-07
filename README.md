@@ -3,6 +3,15 @@
 
 # Bluetooth Keyboard for Cardputer User Manual
 
+## 0.Change history
+
+*   v101 2025-06-07
+    * initial release
+*   v102 2025-06-08
+    * Removed `Insert` and `PrintScreen` Keys from Cursor Movement Mode
+---
+
+
 ## 1. Introduction
 
 This software (`tiny-bleKeyboard`) is for using the M5Stack Cardputer as a Bluetooth keyboard.
@@ -142,8 +151,6 @@ When cursor movement mode is on (the `Fn` key is not pressed), the following key
 | [ (Left Bracket)| End            |
 | = (Equals)    | Page Up        |
 | ] (Right Bracket)| Page Down      |
-| \ (Backslash) | Insert         |
-| ' (Apostrophe)| Print Screen   |
 
 ![mapping keys in cursor movement mode ](images/04a-cardputer-gazo.jpg)<br>
 ＊mapping keys in cursor movement mode

@@ -1,7 +1,7 @@
 // --------------------------------------------------------
-//  *** tiny bleKeyboard ***
+//  *** tiny bleKeyboard ***     by NoRi
 //  bluetooth keyboard software for Cardputer
-//   2025-06-07 by NoRi
+//   2025-06-08  v102
 // https://github.com/NoRi-230401/tiny-bleKeyboard-Cardputer
 //  MIT License
 // --------------------------------------------------------
@@ -92,7 +92,7 @@ static bool warnDispFlag = true;
 static uint8_t consecutiveLowBatteryCount = 0;
 static unsigned long lowBatteryWarnStartTimeMs = 0;
 const uint8_t LOW_BATTERY_CONSECUTIVE_READINGS = 3;
-const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10;  // % : define LOW BATTERY lvl
+const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
 
 // --- hid key-code define ----
 const uint8_t HID_UPARROW = 0x52;
@@ -124,7 +124,9 @@ const std::map<uint8_t, uint8_t> fnKeyExclusiveMappings = {
     {0x24, HID_F7},     // '7' -> F7
     {0x25, HID_F8},     // '8' -> F8
     {0x26, HID_F9},     // '9' -> F9
-    {0x27, HID_F10}     // '0' -> F10
+    {0x27, HID_F10},    // '0' -> F10
+    {0x31, HID_INS},    // '\' -> Insert
+    {0x34, HID_PRINTSC} // ''' -> Print Screen
 };
 
 // generalNavigationMappings: Mappings used in combination with Fn key (if not in exclusive) or in cursor mode
@@ -136,9 +138,7 @@ const std::map<uint8_t, uint8_t> generalNavigationMappings = {
     {0x2d, HID_HOME},       // '-' -> Home
     {0x2f, HID_END},        // '[' -> End
     {0x2e, HID_PAGEUP},     // '=' -> Page Up
-    {0x30, HID_PAGEDOWN},   // ']' -> Page Down
-    {0x31, HID_INS},        // '\' -> Insert
-    {0x34, HID_PRINTSC}     // ''' -> Print Screen
+    {0x30, HID_PAGEDOWN}    // ']' -> Page Down
 };
 // --------------------------------------
 
@@ -151,7 +151,6 @@ const int COL_CURSORMODE = 10;           // "CurM" display start position
 const int COL_APO = 15;                  // "Apo" display start position
 const int COL_BATVAL = 16;               // Battery value display start position
 const int WIDTH_BATVAL_LEN = 3;          // Battery value display length
-
 
 void setup()
 {
@@ -925,7 +924,6 @@ bool rdNVS(const char *title, uint8_t &data)
   return false;
 }
 
-
 enum PowerSaveFSM
 {
   PS_NORMAL,
@@ -959,7 +957,7 @@ void powerSaveAndDisp()
     {
       psState = PS_LOW_BATTERY_WARN;
       lowBatteryWarnStartTimeMs = currentTime;
-      warnDispFlag = true; // To show message first
+      warnDispFlag = true;                              // To show message first
       M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Ensure warning is visible
       M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
       // -------"01234567890123456789"--
@@ -976,7 +974,8 @@ void powerSaveAndDisp()
     else
     {
       // Blinking logic for "LOW BATTERY !!"
-      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS) {
+      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
+      {
         prev_warn_disp_tm = currentTime;
         warnDispFlag = !warnDispFlag;
         M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -1052,7 +1051,7 @@ void powerSaveAndDisp()
 
 void dispBatteryLevel()
 {
-  
+
   // Line1 : battery level display
   //---- 01234567890123456789---
   // L1_"            bat.100%"--
@@ -1069,11 +1068,15 @@ void dispBatteryLevel()
   bleKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
 
   // Update consecutive low battery count
-  if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD) {
-    if (consecutiveLowBatteryCount < LOW_BATTERY_CONSECUTIVE_READINGS) { // Avoid overflow if already at max
-        consecutiveLowBatteryCount++;
+  if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD)
+  {
+    if (consecutiveLowBatteryCount < LOW_BATTERY_CONSECUTIVE_READINGS)
+    { // Avoid overflow if already at max
+      consecutiveLowBatteryCount++;
     }
-  } else {
+  }
+  else
+  {
     consecutiveLowBatteryCount = 0; // Reset if battery level is acceptable
   }
 }
