@@ -138,48 +138,48 @@ void Keyboard_Class::updateKeysState() {
     // Get special keys
     for (auto& i : _key_list_buffer) {
         // modifier
-        if (getKeyValue(i).value_first == KEY_FN) {
+        if (getKeyValue(i).value_first == M5_KEY_FN) {
             _keys_state_buffer.fn = true;
             continue;
         }
 
-        if (getKeyValue(i).value_first == KEY_OPT) {
+        if (getKeyValue(i).value_first == M5_KEY_OPT) {
             _keys_state_buffer.opt = true;
             continue;
         }
 
-        if (getKeyValue(i).value_first == KEY_LEFT_CTRL) {
+        if (getKeyValue(i).value_first == M5_KEY_LEFT_CTRL) {
             _keys_state_buffer.ctrl = true;
             _key_pos_modifier_keys.push_back(i);
             continue;
         }
 
-        if (getKeyValue(i).value_first == KEY_LEFT_SHIFT) {
+        if (getKeyValue(i).value_first == M5_KEY_LEFT_SHIFT) {
             _keys_state_buffer.shift = true;
             _key_pos_modifier_keys.push_back(i);
             continue;
         }
 
-        if (getKeyValue(i).value_first == KEY_LEFT_ALT) {
+        if (getKeyValue(i).value_first == M5_KEY_LEFT_ALT) {
             _keys_state_buffer.alt = true;
             _key_pos_modifier_keys.push_back(i);
             continue;
         }
 
         // function
-        if (getKeyValue(i).value_first == KEY_TAB) {
+        if (getKeyValue(i).value_first == M5_KEY_TAB) {
             _keys_state_buffer.tab = true;
             _key_pos_hid_keys.push_back(i);
             continue;
         }
 
-        if (getKeyValue(i).value_first == KEY_BACKSPACE) {
+        if (getKeyValue(i).value_first == M5_KEY_BACKSPACE) {
             _keys_state_buffer.del = true;
             _key_pos_hid_keys.push_back(i);
             continue;
         }
 
-        if (getKeyValue(i).value_first == KEY_ENTER) {
+        if (getKeyValue(i).value_first == M5_KEY_ENTER) {
             _keys_state_buffer.enter = true;
             _key_pos_hid_keys.push_back(i);
             continue;
@@ -203,7 +203,7 @@ void Keyboard_Class::updateKeysState() {
 
     for (auto& i : _key_pos_hid_keys) {
         uint8_t k = getKeyValue(i).value_first;
-        if (k == KEY_TAB || k == KEY_BACKSPACE || k == KEY_ENTER) {
+        if (k == M5_KEY_TAB || k == M5_KEY_BACKSPACE || k == M5_KEY_ENTER) {
             _keys_state_buffer.hid_keys.push_back(k);
             continue;
         }

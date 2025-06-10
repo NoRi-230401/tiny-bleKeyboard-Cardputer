@@ -1,7 +1,7 @@
 // --------------------------------------------------------
 //  *** tiny bleKeyboard ***     by NoRi
 //  bluetooth keyboard software for Cardputer
-//   2025-06-08  v102
+//   2025-06-10  v103
 // https://github.com/NoRi-230401/tiny-bleKeyboard-Cardputer
 //  MIT License
 // --------------------------------------------------------
@@ -11,38 +11,40 @@
 #include <BleKeyboard.h>
 #include <M5Cardputer.h>
 #include <M5StackUpdater.h>
+#include <map>
 #include <esp_sleep.h>     // Added for Deep Sleep
 #include <driver/gpio.h>   // Added for gpio_pullup_en
-// #include <driver/adc.h>    // Added for adc_power_off
 #include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
 #include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
 #include <algorithm>
 #include <string> // Added for std::string
-#include <map>
 
 void setup();
 void loop();
 bool checkInput(m5::Keyboard_Class::KeysState &current_keys_state);
 bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys);
-void bleSend(const m5::Keyboard_Class::KeysState &current_keys);
-void notifyBleConnect();
-void powerSaveAndDisp();
+void keySend(const m5::Keyboard_Class::KeysState &current_keys);
 void dispLx(uint8_t Lx, const char *msg);
 void dispModsKeys(const char *msg);
 void dispModsCls();
 void dispSendKey(const char *msg);
 void dispSendKey2(const char *msg);
 void dispFnState();
-void dispBleState();
 void dispInit();
 void m5stack_begin();
 void SDU_lobby();
 bool SD_begin();
-void goDeepSleep();
 void fnStateInit();
+void powerSave();
+void dispBatteryLevel();
+
+//-- bluKeyboad only function (no usbKeyboad func) --
+void notifyBleConnect();
+void dispBleState();
+void goDeepSleep();
 bool wrtNVS(const char *title, uint8_t data);
 bool rdNVS(const char *title, uint8_t &data);
-void dispBatteryLevel();
+// --------------------------------------------------
 
 // ----- Cardputer Specific disp paramaters -----------
 const int32_t N_COLS = 20; // columns
@@ -53,9 +55,7 @@ static int32_t W_CHR, H_CHR;
 static int32_t LINE0, LINE1, LINE2, LINE3, LINE4, LINE5;
 
 //-------------------------------------
-BleKeyboard bleKey;
-KeyReport bleKeyReport;
-SPIClass SPI2;
+static SPIClass SPI2;
 static bool SD_ENABLE;
 static bool capsLock; // fn + 1  : Cpas Lock On/Off
 static bool cursMode; // fn + 2  : cursor movement mode On/Off
@@ -86,13 +86,8 @@ unsigned long apoTmout; // ms: auto powerOff(APO) timeout
 esp_sleep_wakeup_cause_t wakeup_reason;
 
 // --- control APO and LOW BATTERY  -----------
-static unsigned long prev_btlvl_disp_tm = 0L;
-static unsigned long prev_warn_disp_tm = 0L;
-static bool warnDispFlag = true;
 static uint8_t consecutiveLowBatteryCount = 0;
-static unsigned long lowBatteryWarnStartTimeMs = 0;
 const uint8_t LOW_BATTERY_CONSECUTIVE_READINGS = 3;
-const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
 
 // --- hid key-code define ----
 const uint8_t HID_UPARROW = 0x52;
@@ -142,15 +137,12 @@ const std::map<uint8_t, uint8_t> generalNavigationMappings = {
 };
 // --------------------------------------
 
-unsigned long lastKeyInput = 0;          // last key input time
-const uint8_t BRIGHT_NORMAL = 70;        // LCD normal bright level
-const uint8_t BRIGHT_LOW = 20;           // LCD low bright level
-const uint8_t MAX_SIMULTANEOUS_KEYS = 6; // Max number of keys in HID report (excluding modifier keys)
-const int COL_CAPSLOCK = 1;              // "Cap" display start position
-const int COL_CURSORMODE = 10;           // "CurM" display start position
-const int COL_APO = 15;                  // "Apo" display start position
-const int COL_BATVAL = 16;               // Battery value display start position
-const int WIDTH_BATVAL_LEN = 3;          // Battery value display length
+unsigned long lastKeyInput = 0;   // last key input time
+const uint8_t BRIGHT_NORMAL = 70; // LCD normal bright level
+const uint8_t BRIGHT_LOW = 20;    // LCD low bright level
+
+BleKeyboard bleKey;
+KeyReport bleKeyReport;
 
 void setup()
 {
@@ -176,11 +168,11 @@ void loop()
   if (checkInput(current_keys_state))       // check Cardputer key input and get state
   {                                         // if keys input
     if (!specialFnMode(current_keys_state)) // special function mode check
-      bleSend(current_keys_state);          // send data via bluetooth
+      keySend(current_keys_state);          // send data via bluetooth
   }
 
   notifyBleConnect(); // check bluetooth connection
-  powerSaveAndDisp(); // bat.status disp and power save
+  powerSave();        // bat.status disp and power save
   delay(5);
 }
 
@@ -261,7 +253,7 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
   return false;
 }
 
-void bleSend(const m5::Keyboard_Class::KeysState &current_keys)
+void keySend(const m5::Keyboard_Class::KeysState &current_keys)
 {
   bleKeyReport = {0};
   String modsStr = "";
@@ -298,6 +290,8 @@ void bleSend(const m5::Keyboard_Class::KeysState &current_keys)
 
   // *****  Regular Character Keys *****
   int count = 0;
+  const uint8_t MAX_SIMULTANEOUS_KEYS = 6; // Max number of keys in HID report (excluding modifier keys)
+
   for (auto hidCode : current_keys.hid_keys)
   {
     char tempBuf[8]; // For " 0xYY" format
@@ -356,27 +350,6 @@ void bleSend(const m5::Keyboard_Class::KeysState &current_keys)
   if (!keysDisplayString.isEmpty())
   {
     dispSendKey(keysDisplayString.c_str());
-  }
-}
-
-static unsigned long PREV_BLECHK_TM = 0;
-void notifyBleConnect()
-{
-  const unsigned long BLE_CONNECT_CHECK_INTERVAL_MS = 1000UL;
-  if (millis() < PREV_BLECHK_TM + BLE_CONNECT_CHECK_INTERVAL_MS)
-    return;
-
-  PREV_BLECHK_TM = millis();
-
-  if (bleKey.isConnected() && !bleConnect)
-  {
-    bleConnect = true;
-    dispBleState();
-  }
-  else if (!bleKey.isConnected() && bleConnect)
-  {
-    bleConnect = false;
-    dispBleState();
   }
 }
 
@@ -440,6 +413,10 @@ void dispFnState()
   const char *StCaps[] = {"unlock", " lock"};
   const char *StEditMode[] = {"off", " on"};
 
+  const int COL_CAPSLOCK = 1;    // "Cap" display start position
+  const int COL_CURSORMODE = 10; // "CurM" display start position
+  const int COL_APO = 15;        // "Apo" display start position
+
   M5Cardputer.Display.fillRect(0, LINE3, X_WIDTH, H_CHR, TFT_BLACK);
 
   // capsLock state
@@ -472,27 +449,6 @@ void dispFnState()
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5Cardputer.Display.setCursor(W_CHR * COL_APO, LINE3);
   M5Cardputer.Display.print(apoSettings[apoTmIndex].timeString);
-}
-
-void dispBleState()
-{ // line0: software name and BLE connect information
-  //----01234567890123456789--
-  // L0_"- tiny bleKeyboard -"-
-  //----01234567890123456789--
-
-  M5Cardputer.Display.fillRect(0, LINE0, X_WIDTH, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(0, LINE0);
-  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.print("- tiny ");
-
-  if (bleConnect)
-    M5Cardputer.Display.setTextColor(TFT_BLUE, TFT_BLACK);
-  else
-    M5Cardputer.Display.setTextColor(TFT_RED, TFT_BLACK);
-  M5Cardputer.Display.print("ble");
-
-  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.print("Keyboard -");
 }
 
 void dispInit()
@@ -681,6 +637,260 @@ bool SD_begin()
   return true;
 }
 
+void fnStateInit()
+{
+  // capsLock state is always 'false' start
+  capsLock = false;
+
+  // cursor movement mode state is recovered if waking up from DeepSleep
+  cursMode = false;
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT0)
+  { // Read NVS data if waking up from DeepSleep
+#ifdef DEBUG
+    Serial.println("Wakeup from DeepSleep");
+#endif
+    uint8_t nvmData;
+    if (rdNVS(CURM_TITLE, nvmData))
+    {
+      if (nvmData == CUSRM_ON)
+        cursMode = true;
+    }
+  }
+  else // PowerOn: did not wake up from DeepSleep
+  {
+#ifdef DEBUG
+    Serial.println("POWER ON");
+#endif
+    ;
+  }
+  // -----------------------------------------------------
+
+  // Auto PowerOff state is always restored from NVS at start
+  apoTmIndex = apoTmDefault;
+  uint8_t nvmData;
+  if (rdNVS(APO_TITLE, nvmData))
+    apoTmIndex = nvmData;
+  if (apoTmIndex > apoTmMax)
+    apoTmIndex = apoTmDefault;
+
+  apoTmout = static_cast<unsigned long>(apoSettings[apoTmIndex].timeMinutes) * 60 * 1000L;
+  wrtNVS(APO_TITLE, apoTmIndex);
+#ifdef DEBUG
+  Serial.print("autoPowerOff: ");
+  Serial.println(apoSettings[apoTmIndex].timeString);
+  Serial.print("apoTmout: ");
+  Serial.println(apoTmout, DEC);
+#endif
+}
+
+enum PowerSaveFSM
+{
+  PS_NORMAL,
+  PS_LOW_BRIGHT,
+  PS_WARN_APO,
+  PS_LOW_BATTERY_WARN
+};
+static PowerSaveFSM psState = PS_NORMAL;
+
+static unsigned long prev_btlvl_disp_tm = 0L;
+static unsigned long prev_warn_disp_tm = 0L;
+static bool warnDispFlag = true;
+static unsigned long lowBatteryWarnStartTimeMs = 0;
+
+void powerSave()
+{
+  const unsigned long BATLVL_DISP_INTERVAL_MS = 5 * 1000UL;
+  const unsigned long LOW_BATTERY_WARN_BLINK_DURATION_MS = 30 * 1000UL;
+
+  const unsigned long LOW_BRIGHT_TIMEOUT_MS = 40 * 1000UL;
+  const unsigned long APO_WARN_PERIOD_MS = 15 * 1000UL;
+  const unsigned long WARN_BLINK_INTERVAL_MS = 500UL;
+  unsigned long currentTime = millis(); // Get current time once
+  unsigned long timeSinceLastInput = currentTime - lastKeyInput;
+
+  if (currentTime - prev_btlvl_disp_tm >= BATLVL_DISP_INTERVAL_MS)
+  {
+    prev_btlvl_disp_tm = currentTime;
+    dispBatteryLevel(); // This will update consecutiveLowBatteryCount
+  }
+
+  // Check for Low Battery condition first (highest priority)
+  if (consecutiveLowBatteryCount >= LOW_BATTERY_CONSECUTIVE_READINGS)
+  {
+    if (psState != PS_LOW_BATTERY_WARN)
+    {
+      psState = PS_LOW_BATTERY_WARN;
+      lowBatteryWarnStartTimeMs = currentTime;
+      warnDispFlag = true;                              // To show message first
+      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Ensure warning is visible
+      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+      // -------"01234567890123456789"--
+      dispLx(4, "    LOW BATTERY !!  ");
+      // -------"01234567890123456789"--
+      prev_warn_disp_tm = currentTime; // Reset blink timer for this new warning
+    }
+
+    // Handle blinking and eventual deep sleep for low battery
+    if (currentTime >= lowBatteryWarnStartTimeMs + LOW_BATTERY_WARN_BLINK_DURATION_MS)
+    {
+      goDeepSleep(); // Enter deep sleep after warning duration
+    }
+    else
+    {
+      // Blinking logic for "LOW BATTERY !!"
+      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
+      {
+        prev_warn_disp_tm = currentTime;
+        warnDispFlag = !warnDispFlag;
+        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        dispLx(4, warnDispFlag ? "    LOW BATTERY !!  " : "");
+      }
+    }
+    return; // Low battery handling takes precedence over other power saving modes
+  }
+
+  if (timeSinceLastInput < LOW_BRIGHT_TIMEOUT_MS)
+  { // Still within normal active period
+    if (psState != PS_NORMAL)
+    {
+      // If returning to normal from any other state (low bright, APO warn)
+      psState = PS_NORMAL;
+      dispInit(); // Restore full display, normal brightness, and clear any previous warnings
+    }
+    return;
+  }
+
+  // LOW_BRIGHT_TIMEOUT_MS has passed
+  if (apoTmIndex == apoTmMax) // APO is "off"
+  {
+    // --- If APO is "off",  APO is disable  ---
+    // no power save function, not need dimming,warining,sleeping
+    return;
+  }
+
+  // APO is enabled, and LOW_BRIGHT_TIMEOUT_MS has passed.
+  // Proceed with dimming, warning, and sleeping logic.
+  if (psState == PS_NORMAL)
+  {
+    // Transition from Normal to Low Bright as LOW_BRIGHT_TIMEOUT_MS has passed and APO is on
+    psState = PS_LOW_BRIGHT;
+    M5Cardputer.Display.setBrightness(BRIGHT_LOW);
+  }
+
+  if (psState == PS_LOW_BRIGHT)
+  {
+    // Check if it's time to transition to warning state
+    if (timeSinceLastInput >= (apoTmout - APO_WARN_PERIOD_MS))
+    {
+      psState = PS_WARN_APO;
+      prev_warn_disp_tm = currentTime;                  // Initialize for blinking
+      warnDispFlag = true;                              // Show warning message first
+      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Restore brightness for warning
+      // Display initial warning message
+      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+      dispLx(4, "     SLEEP TIME     ");
+    }
+  }
+
+  if (psState == PS_WARN_APO)
+  {
+    if (timeSinceLastInput >= apoTmout)
+    { // APO timeout reached
+      goDeepSleep();
+      // esp_deep_sleep_start() does not return
+    }
+    else
+    {
+      // Still in warning period, blink the message
+      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
+      {
+        prev_warn_disp_tm = currentTime;
+        warnDispFlag = !warnDispFlag;
+        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        dispLx(4, warnDispFlag ? "     SLEEP TIME     " : "");
+      }
+    }
+  }
+}
+
+
+void dispBatteryLevel()
+{
+  // Line1 : battery level display
+  //---- 01234567890123456789---
+  // L1_"            bat.100%"--
+  //---- 01234567890123456789---
+  const int COL_BATVAL = 16;      // Battery value display start position
+  const int WIDTH_BATVAL_LEN = 3; // Battery value display length
+  const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
+
+  M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, LINE1, W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(W_CHR * COL_BATVAL, LINE1);
+  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  uint8_t batLvl = (uint8_t)M5.Power.getBatteryLevel();  // Get battery level
+  char batLvlBuf[4];                                     // Buffer for "XXX" + null terminator
+  snprintf(batLvlBuf, sizeof(batLvlBuf), "%3u", batLvl); // %3u pads with spaces if less than 3 digits
+  M5Cardputer.Display.print(batLvlBuf);
+
+  bleKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
+
+  // Update consecutive low battery count
+  if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD)
+  {
+    if (consecutiveLowBatteryCount < LOW_BATTERY_CONSECUTIVE_READINGS)
+    { // Avoid overflow if already at max
+      consecutiveLowBatteryCount++;
+    }
+  }
+  else
+  {
+    consecutiveLowBatteryCount = 0; // Reset if battery level is acceptable
+  }
+}
+
+static unsigned long PREV_BLECHK_TM = 0;
+void notifyBleConnect()
+{
+  const unsigned long BLE_CONNECT_CHECK_INTERVAL_MS = 1000UL;
+  if (millis() < PREV_BLECHK_TM + BLE_CONNECT_CHECK_INTERVAL_MS)
+    return;
+
+  PREV_BLECHK_TM = millis();
+
+  if (bleKey.isConnected() && !bleConnect)
+  {
+    bleConnect = true;
+    dispBleState();
+  }
+  else if (!bleKey.isConnected() && bleConnect)
+  {
+    bleConnect = false;
+    dispBleState();
+  }
+}
+
+void dispBleState()
+{ // line0: software name and BLE connect information
+  //----01234567890123456789--
+  // L0_"- tiny bleKeyboard -"-
+  //----01234567890123456789--
+
+  M5Cardputer.Display.fillRect(0, LINE0, X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(0, LINE0);
+  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5Cardputer.Display.print("- tiny ");
+
+  if (bleConnect)
+    M5Cardputer.Display.setTextColor(TFT_BLUE, TFT_BLACK);
+  else
+    M5Cardputer.Display.setTextColor(TFT_RED, TFT_BLACK);
+  M5Cardputer.Display.print("ble");
+
+  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5Cardputer.Display.print("Keyboard -");
+}
+
 void goDeepSleep()
 {
 #ifdef DEBUG
@@ -856,52 +1066,6 @@ void goDeepSleep()
   // **** NEVER RETURN *****
 }
 
-void fnStateInit()
-{
-  // capsLock state is always 'false' start
-  capsLock = false;
-
-  // cursor movement mode state is recovered if waking up from DeepSleep
-  cursMode = false;
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT0)
-  { // Read NVS data if waking up from DeepSleep
-#ifdef DEBUG
-    Serial.println("Wakeup from DeepSleep");
-#endif
-    uint8_t nvmData;
-    if (rdNVS(CURM_TITLE, nvmData))
-    {
-      if (nvmData == CUSRM_ON)
-        cursMode = true;
-    }
-  }
-  else // PowerOn: did not wake up from DeepSleep
-  {
-#ifdef DEBUG
-    Serial.println("POWER ON");
-#endif
-    ;
-  }
-  // -----------------------------------------------------
-
-  // Auto PowerOff state is always restored from NVS at start
-  apoTmIndex = apoTmDefault;
-  uint8_t nvmData;
-  if (rdNVS(APO_TITLE, nvmData))
-    apoTmIndex = nvmData;
-  if (apoTmIndex > apoTmMax)
-    apoTmIndex = apoTmDefault;
-
-  apoTmout = static_cast<unsigned long>(apoSettings[apoTmIndex].timeMinutes) * 60 * 1000L;
-  wrtNVS(APO_TITLE, apoTmIndex);
-#ifdef DEBUG
-  Serial.print("autoPowerOff: ");
-  Serial.println(apoSettings[apoTmIndex].timeString);
-  Serial.print("apoTmout: ");
-  Serial.println(apoTmout, DEC);
-#endif
-}
-
 bool wrtNVS(const char *title, uint8_t data)
 {
   if (ESP_OK == nvs_open(NVS_SETTING, NVS_READWRITE, &nvs))
@@ -922,161 +1086,4 @@ bool rdNVS(const char *title, uint8_t &data)
     return true;
   }
   return false;
-}
-
-enum PowerSaveFSM
-{
-  PS_NORMAL,
-  PS_LOW_BRIGHT,
-  PS_WARN_APO,
-  PS_LOW_BATTERY_WARN
-};
-static PowerSaveFSM psState = PS_NORMAL;
-
-void powerSaveAndDisp()
-{
-  const unsigned long BATLVL_DISP_INTERVAL_MS = 5 * 1000UL;
-  const unsigned long LOW_BATTERY_WARN_BLINK_DURATION_MS = 30 * 1000UL;
-
-  const unsigned long LOW_BRIGHT_TIMEOUT_MS = 40 * 1000UL;
-  const unsigned long APO_WARN_PERIOD_MS = 15 * 1000UL;
-  const unsigned long WARN_BLINK_INTERVAL_MS = 500UL;
-  unsigned long currentTime = millis(); // Get current time once
-  unsigned long timeSinceLastInput = currentTime - lastKeyInput;
-
-  if (currentTime > prev_btlvl_disp_tm + BATLVL_DISP_INTERVAL_MS)
-  {
-    prev_btlvl_disp_tm = currentTime;
-    dispBatteryLevel(); // This will update consecutiveLowBatteryCount
-  }
-
-  // Check for Low Battery condition first (highest priority)
-  if (consecutiveLowBatteryCount >= LOW_BATTERY_CONSECUTIVE_READINGS)
-  {
-    if (psState != PS_LOW_BATTERY_WARN)
-    {
-      psState = PS_LOW_BATTERY_WARN;
-      lowBatteryWarnStartTimeMs = currentTime;
-      warnDispFlag = true;                              // To show message first
-      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Ensure warning is visible
-      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-      // -------"01234567890123456789"--
-      dispLx(4, "    LOW BATTERY !!  ");
-      // -------"01234567890123456789"--
-      prev_warn_disp_tm = currentTime; // Reset blink timer for this new warning
-    }
-
-    // Handle blinking and eventual deep sleep for low battery
-    if (currentTime >= lowBatteryWarnStartTimeMs + LOW_BATTERY_WARN_BLINK_DURATION_MS)
-    {
-      goDeepSleep(); // Enter deep sleep after warning duration
-    }
-    else
-    {
-      // Blinking logic for "LOW BATTERY !!"
-      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
-      {
-        prev_warn_disp_tm = currentTime;
-        warnDispFlag = !warnDispFlag;
-        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        dispLx(4, warnDispFlag ? "    LOW BATTERY !!  " : "");
-      }
-    }
-    return; // Low battery handling takes precedence over other power saving modes
-  }
-
-  if (timeSinceLastInput < LOW_BRIGHT_TIMEOUT_MS)
-  { // Still within normal active period
-    if (psState != PS_NORMAL)
-    {
-      // If returning to normal from any other state (low bright, APO warn)
-      psState = PS_NORMAL;
-      dispInit(); // Restore full display, normal brightness, and clear any previous warnings
-    }
-    return;
-  }
-
-  // LOW_BRIGHT_TIMEOUT_MS has passed
-  if (apoTmIndex == apoTmMax) // APO is "off"
-  {
-    // --- If APO is "off",  APO is disable  ---
-    // no power save function, not need dimming,warining,sleeping
-    return;
-  }
-
-  // APO is enabled, and LOW_BRIGHT_TIMEOUT_MS has passed.
-  // Proceed with dimming, warning, and sleeping logic.
-  if (psState == PS_NORMAL)
-  {
-    // Transition from Normal to Low Bright as LOW_BRIGHT_TIMEOUT_MS has passed and APO is on
-    psState = PS_LOW_BRIGHT;
-    M5Cardputer.Display.setBrightness(BRIGHT_LOW);
-  }
-
-  if (psState == PS_LOW_BRIGHT)
-  {
-    // Check if it's time to transition to warning state
-    if (timeSinceLastInput >= (apoTmout - APO_WARN_PERIOD_MS))
-    {
-      psState = PS_WARN_APO;
-      prev_warn_disp_tm = currentTime;                  // Initialize for blinking
-      warnDispFlag = true;                              // Show warning message first
-      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Restore brightness for warning
-      // Display initial warning message
-      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-      dispLx(4, "     SLEEP TIME     ");
-    }
-  }
-
-  if (psState == PS_WARN_APO)
-  {
-    if (timeSinceLastInput >= apoTmout)
-    { // APO timeout reached
-      goDeepSleep();
-      // esp_deep_sleep_start() does not return
-    }
-    else
-    {
-      // Still in warning period, blink the message
-      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
-      {
-        prev_warn_disp_tm = currentTime;
-        warnDispFlag = !warnDispFlag;
-        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        dispLx(4, warnDispFlag ? "     SLEEP TIME     " : "");
-      }
-    }
-  }
-}
-
-void dispBatteryLevel()
-{
-
-  // Line1 : battery level display
-  //---- 01234567890123456789---
-  // L1_"            bat.100%"--
-  //---- 01234567890123456789---
-  M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, LINE1, W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * COL_BATVAL, LINE1);
-  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  uint8_t batLvl = (uint8_t)M5.Power.getBatteryLevel();  // Get battery level
-  char batLvlBuf[4];                                     // Buffer for "XXX" + null terminator
-  snprintf(batLvlBuf, sizeof(batLvlBuf), "%3u", batLvl); // %3u pads with spaces if less than 3 digits
-  M5Cardputer.Display.print(batLvlBuf);
-
-  bleKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
-
-  // Update consecutive low battery count
-  if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD)
-  {
-    if (consecutiveLowBatteryCount < LOW_BATTERY_CONSECUTIVE_READINGS)
-    { // Avoid overflow if already at max
-      consecutiveLowBatteryCount++;
-    }
-  }
-  else
-  {
-    consecutiveLowBatteryCount = 0; // Reset if battery level is acceptable
-  }
 }
