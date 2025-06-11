@@ -1,7 +1,7 @@
 # tiny-bleKeyboard-Cardputer
 **[`　English　`](README.md)**
 
-# Cardputer用 Bluetoothキーボード 取扱説明書
+# Cardputer用 Bluetoothキーボード 説明書
 
 ## 0. 変更履歴
 

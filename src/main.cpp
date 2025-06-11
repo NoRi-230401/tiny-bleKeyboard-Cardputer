@@ -7,11 +7,11 @@
 // --------------------------------------------------------
 #include <Arduino.h>
 #include <SD.h>
-#include <nvs.h>
-#include <BleKeyboard.h>
 #include <M5Cardputer.h>
 #include <M5StackUpdater.h>
 #include <map>
+#include <nvs.h>
+#include <BleKeyboard.h>
 using std::string;
 
 void setup();
