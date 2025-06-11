@@ -12,12 +12,7 @@
 #include <M5Cardputer.h>
 #include <M5StackUpdater.h>
 #include <map>
-#include <esp_sleep.h>     // Added for Deep Sleep
-#include <driver/gpio.h>   // Added for gpio_pullup_en
-#include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
-#include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
-#include <algorithm>
-#include <string> // Added for std::string
+using std::string;
 
 void setup();
 void loop();
@@ -37,14 +32,17 @@ bool SD_begin();
 void fnStateInit();
 void powerSave();
 void dispBatteryLevel();
-
-//-- bluKeyboad only function (no usbKeyboad func) --
+//----- `bleKeyboad` only (no `usbKeyboad`) -----------------
+#include <esp_sleep.h>     // Added for Deep Sleep
+#include <driver/gpio.h>   // Added for gpio_pullup_en
+#include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
+#include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
 void notifyBleConnect();
 void dispBleState();
 void goDeepSleep();
 bool wrtNVS(const char *title, uint8_t data);
 bool rdNVS(const char *title, uint8_t &data);
-// --------------------------------------------------
+// -----------------------------------------------------------
 
 // ----- Cardputer Specific disp paramaters -----------
 const int32_t N_COLS = 20; // columns
@@ -62,6 +60,10 @@ static bool cursMode; // fn + 2  : cursor movement mode On/Off
 static bool bleConnect = false;
 
 // -- Auto Power Off(APO) --- (fn + 3)  ----
+//-------- <<< control APO and LOW BATTERY  >>> ---------------
+esp_sleep_wakeup_cause_t wakeup_reason;
+static uint8_t consecutiveLowBatteryCount = 0;
+const uint8_t LOW_BATTERY_CONSECUTIVE_READINGS = 3;
 nvs_handle_t nvs;
 const char *NVS_SETTING = "setting";
 const char *APO_TITLE = "apo";
@@ -75,6 +77,7 @@ struct ApoSetting
   int timeMinutes;
   const char *timeString;
 };
+
 const ApoSetting apoSettings[] = {
     {1, " 1min"}, {2, " 2min"}, {3, " 3min"}, {5, " 5min"}, {10, "10min"}, {15, "15min"}, {20, "20min"}, {30, "30min"}, {7 * 24 * 60, " off "}};
 // if Apo is "off", set 7days time data : that is enough long time
@@ -83,11 +86,7 @@ const uint8_t apoTmMax = (sizeof(apoSettings) / sizeof(apoSettings[0])) - 1;
 const uint8_t apoTmDefault = 6; // Default APO time: 20min
 uint8_t apoTmIndex = apoTmDefault;
 unsigned long apoTmout; // ms: auto powerOff(APO) timeout
-esp_sleep_wakeup_cause_t wakeup_reason;
-
-// --- control APO and LOW BATTERY  -----------
-static uint8_t consecutiveLowBatteryCount = 0;
-const uint8_t LOW_BATTERY_CONSECUTIVE_READINGS = 3;
+//----------------------------------------------------------------------
 
 // --- hid key-code define ----
 const uint8_t HID_UPARROW = 0x52;
@@ -141,8 +140,8 @@ unsigned long lastKeyInput = 0;   // last key input time
 const uint8_t BRIGHT_NORMAL = 70; // LCD normal bright level
 const uint8_t BRIGHT_LOW = 20;    // LCD low bright level
 
-BleKeyboard bleKey;
-KeyReport bleKeyReport;
+BleKeyboard txKey;
+KeyReport txKeyReport;
 
 void setup()
 {
@@ -154,7 +153,7 @@ void setup()
     SD.end();
   }
 
-  bleKey.begin();
+  txKey.begin();
   fnStateInit(); // function state initialize
   dispInit();    // display initialize
   lastKeyInput = millis();
@@ -188,7 +187,7 @@ bool checkInput(m5::Keyboard_Class::KeysState &current_keys_state)
     }
     else // All keys are physically released
     {
-      bleKey.releaseAll();
+      txKey.releaseAll();
       dispModsCls();
     }
   }
@@ -205,7 +204,6 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
   // return true: special function executed , false: not exectuted
 
   //  --- input keys status setup  -------------------------
-  uint8_t mods = current_keys.modifiers;
   bool existWord = !current_keys.word.empty();
   uint8_t keyWord = 0;
   if (existWord)
@@ -220,7 +218,7 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
     case '!': // Caps Lock Toggle (fn + '1')
       specialFnProcessed = true;
       capsLock = !capsLock;
-      bleKey.write(KEY_CAPS_LOCK);
+      txKey.write(KEY_CAPS_LOCK);
       break;
     case '2':
     case '@': // Cursor movement Mode Toggle (fn + '2')
@@ -245,8 +243,8 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
     if (specialFnProcessed)
     {
       dispFnState();
-      bleKey.releaseAll(); // Release all keys/modifiers on the host side
-      dispModsCls();       // Clear modifier key display on the Cardputer side
+      txKey.releaseAll(); // Release all keys/modifiers on the host side
+      dispModsCls();      // Clear modifier key display on the Cardputer side
       return true;
     }
   }
@@ -255,10 +253,10 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
 
 void keySend(const m5::Keyboard_Class::KeysState &current_keys)
 {
-  bleKeyReport = {0};
-  String modsStr = "";
+  txKeyReport = {0};
   uint8_t modifier = 0;
-  String localSendWord = ""; // Use local variable for constructing HID code string
+  string modsStr;    // Buffer for modifier keys string
+  string hidCodeStr; // Buffer for HID codes string, stores " 0xYY 0xZZ..."
 
   // ** modifiers keys(ctrl,shift,alt) and fn **
   //    these keys are used with other key
@@ -283,20 +281,22 @@ void keySend(const m5::Keyboard_Class::KeysState &current_keys)
     modsStr += "Opt ";
   }
   if (current_keys.fn)
+  {
     modsStr += "Fn ";
+  }
 
-  bleKeyReport.modifiers = modifier;
+  txKeyReport.modifiers = modifier;
   dispModsKeys(modsStr.c_str());
 
   // *****  Regular Character Keys *****
   int count = 0;
-  const uint8_t MAX_SIMULTANEOUS_KEYS = 6; // Max number of keys in HID report (excluding modifier keys)
+  const uint8_t MAX_SIMULTANEOUS_KEYS = 6; // Max number of keys in HID report
 
   for (auto hidCode : current_keys.hid_keys)
   {
-    char tempBuf[8]; // For " 0xYY" format
     if (count < MAX_SIMULTANEOUS_KEYS)
     {
+      char tempBuf[8]; // For " 0xYY" format, e.g., " 0x1A"
       uint8_t finalHidCode = hidCode;
 
       if (current_keys.fn)
@@ -324,30 +324,35 @@ void keySend(const m5::Keyboard_Class::KeysState &current_keys)
           finalHidCode = it_general->second;
         }
       }
-      bleKeyReport.keys[count] = finalHidCode;
-      snprintf(tempBuf, sizeof(tempBuf), " 0x%02X", finalHidCode);
-      localSendWord += tempBuf;
+      txKeyReport.keys[count] = finalHidCode;
+      int written = snprintf(tempBuf, sizeof(tempBuf), " 0x%02X", finalHidCode);
+      if (written > 0) // For std::string, just check if snprintf was successful
+      {
+        hidCodeStr += tempBuf;
+      }
       count++;
     }
   }
 
-  // Send keyReport via bluetooth
-  bleKey.sendReport(&bleKeyReport);
+  // Send keyReport to host device
+  txKey.sendReport(&txKeyReport);
 
-  String keysDisplayString = "";
+  string keysDisplayString;
   if (!current_keys.word.empty())
   {
-    keysDisplayString += " ";
-    keysDisplayString += current_keys.word[0];
-    keysDisplayString += " :hid";
+    keysDisplayString = " " + string(1, current_keys.word[0]) + " :hid";
   }
-  else if (!localSendWord.isEmpty())
+  else if (!hidCodeStr.empty())
   {
-    keysDisplayString += " hid";
+    keysDisplayString = " hid";
   }
-  keysDisplayString += localSendWord;
 
-  if (!keysDisplayString.isEmpty())
+  // Append hidCodeStr (HID codes) if there's content and space
+  if (!hidCodeStr.empty())
+  {
+    keysDisplayString += hidCodeStr;
+  }
+  if (!keysDisplayString.empty())
   {
     dispSendKey(keysDisplayString.c_str());
   }
@@ -396,9 +401,9 @@ void dispSendKey(const char *msg)
 void dispSendKey2(const char *msg)
 { // line5 : other keys (enter,tab,backspace, etc ...) send info
   M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-  char buffer[N_COLS + 1]; // Ensure buffer is large enough
-  snprintf(buffer, sizeof(buffer), " %s", msg);
-  dispLx(5, buffer);
+  string temp_str = " ";
+  temp_str += msg;
+  dispLx(5, temp_str.c_str());
 #ifdef DEBUG
   Serial.println(msg); // msg is already const char*
 #endif
@@ -813,15 +818,14 @@ void powerSave()
   }
 }
 
-
 void dispBatteryLevel()
 {
   // Line1 : battery level display
   //---- 01234567890123456789---
   // L1_"            bat.100%"--
   //---- 01234567890123456789---
-  const int COL_BATVAL = 16;      // Battery value display start position
-  const int WIDTH_BATVAL_LEN = 3; // Battery value display length
+  const int COL_BATVAL = 16;                      // Battery value display start position
+  const int WIDTH_BATVAL_LEN = 3;                 // Battery value display length
   const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
 
   M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, LINE1, W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
@@ -833,7 +837,7 @@ void dispBatteryLevel()
   snprintf(batLvlBuf, sizeof(batLvlBuf), "%3u", batLvl); // %3u pads with spaces if less than 3 digits
   M5Cardputer.Display.print(batLvlBuf);
 
-  bleKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
+  txKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
 
   // Update consecutive low battery count
   if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD)
@@ -858,12 +862,12 @@ void notifyBleConnect()
 
   PREV_BLECHK_TM = millis();
 
-  if (bleKey.isConnected() && !bleConnect)
+  if (txKey.isConnected() && !bleConnect)
   {
     bleConnect = true;
     dispBleState();
   }
-  else if (!bleKey.isConnected() && bleConnect)
+  else if (!txKey.isConnected() && bleConnect)
   {
     bleConnect = false;
     dispBleState();
