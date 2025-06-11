@@ -1,47 +1,48 @@
 // --------------------------------------------------------
 //  *** tiny bleKeyboard ***     by NoRi
 //  bluetooth keyboard software for Cardputer
-//   2025-06-08  v102
+//   2025-06-11  v103
 // https://github.com/NoRi-230401/tiny-bleKeyboard-Cardputer
 //  MIT License
 // --------------------------------------------------------
 #include <Arduino.h>
 #include <SD.h>
-#include <nvs.h>
-#include <BleKeyboard.h>
 #include <M5Cardputer.h>
 #include <M5StackUpdater.h>
+#include <map>
+#include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
+using std::string;
+
+//----- `bleKeyboad` only (no `usbKeyboad`) -----------------
+#include <BleKeyboard.h>
+#include <nvs.h>
 #include <esp_sleep.h>     // Added for Deep Sleep
 #include <driver/gpio.h>   // Added for gpio_pullup_en
-#include <driver/adc.h>    // Added for adc_power_off
-#include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
 #include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
-#include <algorithm>
-#include <string> // Added for std::string
-#include <map>
+void notifyBleConnect();
+void dispBleState();
+void goDeepSleep();
+bool wrtNVS(const char *title, uint8_t data);
+bool rdNVS(const char *title, uint8_t &data);
+// -----------------------------------------------------------
 
 void setup();
 void loop();
 bool checkInput(m5::Keyboard_Class::KeysState &current_keys_state);
 bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys);
-void bleSend(const m5::Keyboard_Class::KeysState &current_keys);
-void notifyBleConnect();
-void powerSaveAndDisp();
+void keySend(const m5::Keyboard_Class::KeysState &current_keys);
 void dispLx(uint8_t Lx, const char *msg);
 void dispModsKeys(const char *msg);
 void dispModsCls();
 void dispSendKey(const char *msg);
 void dispSendKey2(const char *msg);
 void dispFnState();
-void dispBleState();
 void dispInit();
 void m5stack_begin();
 void SDU_lobby();
 bool SD_begin();
-void goDeepSleep();
 void fnStateInit();
-bool wrtNVS(const char *title, uint8_t data);
-bool rdNVS(const char *title, uint8_t &data);
+void powerSave();
 void dispBatteryLevel();
 
 // ----- Cardputer Specific disp paramaters -----------
@@ -50,18 +51,20 @@ const int32_t N_ROWS = 6;  // rows
 //---- caluculated in m5stackc_begin() ----------------
 static int32_t X_WIDTH, Y_HEIGHT;
 static int32_t W_CHR, H_CHR;
-static int32_t LINE0, LINE1, LINE2, LINE3, LINE4, LINE5;
+static int32_t SC_LINES[N_ROWS]; // Array to store Y coordinates of each line
 
 //-------------------------------------
-BleKeyboard bleKey;
-KeyReport bleKeyReport;
-SPIClass SPI2;
+static SPIClass SPI2;
 static bool SD_ENABLE;
 static bool capsLock; // fn + 1  : Cpas Lock On/Off
 static bool cursMode; // fn + 2  : cursor movement mode On/Off
 static bool bleConnect = false;
 
 // -- Auto Power Off(APO) --- (fn + 3)  ----
+//-------- <<< control APO and LOW BATTERY  >>> ---------------
+esp_sleep_wakeup_cause_t wakeup_reason;
+static uint8_t consecutiveLowBatteryCount = 0;
+const uint8_t LOW_BATTERY_CONSECUTIVE_READINGS = 3;
 nvs_handle_t nvs;
 const char *NVS_SETTING = "setting";
 const char *APO_TITLE = "apo";
@@ -75,6 +78,7 @@ struct ApoSetting
   int timeMinutes;
   const char *timeString;
 };
+
 const ApoSetting apoSettings[] = {
     {1, " 1min"}, {2, " 2min"}, {3, " 3min"}, {5, " 5min"}, {10, "10min"}, {15, "15min"}, {20, "20min"}, {30, "30min"}, {7 * 24 * 60, " off "}};
 // if Apo is "off", set 7days time data : that is enough long time
@@ -83,16 +87,7 @@ const uint8_t apoTmMax = (sizeof(apoSettings) / sizeof(apoSettings[0])) - 1;
 const uint8_t apoTmDefault = 6; // Default APO time: 20min
 uint8_t apoTmIndex = apoTmDefault;
 unsigned long apoTmout; // ms: auto powerOff(APO) timeout
-esp_sleep_wakeup_cause_t wakeup_reason;
-
-// --- control APO and LOW BATTERY  -----------
-static unsigned long prev_btlvl_disp_tm = 0L;
-static unsigned long prev_warn_disp_tm = 0L;
-static bool warnDispFlag = true;
-static uint8_t consecutiveLowBatteryCount = 0;
-static unsigned long lowBatteryWarnStartTimeMs = 0;
-const uint8_t LOW_BATTERY_CONSECUTIVE_READINGS = 3;
-const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
+//----------------------------------------------------------------------
 
 // --- hid key-code define ----
 const uint8_t HID_UPARROW = 0x52;
@@ -142,15 +137,12 @@ const std::map<uint8_t, uint8_t> generalNavigationMappings = {
 };
 // --------------------------------------
 
-unsigned long lastKeyInput = 0;          // last key input time
-const uint8_t BRIGHT_NORMAL = 70;        // LCD normal bright level
-const uint8_t BRIGHT_LOW = 20;           // LCD low bright level
-const uint8_t MAX_SIMULTANEOUS_KEYS = 6; // Max number of keys in HID report (excluding modifier keys)
-const int COL_CAPSLOCK = 1;              // "Cap" display start position
-const int COL_CURSORMODE = 10;           // "CurM" display start position
-const int COL_APO = 15;                  // "Apo" display start position
-const int COL_BATVAL = 16;               // Battery value display start position
-const int WIDTH_BATVAL_LEN = 3;          // Battery value display length
+unsigned long lastKeyInput = 0;   // last key input time
+const uint8_t BRIGHT_NORMAL = 70; // LCD normal bright level
+const uint8_t BRIGHT_LOW = 20;    // LCD low bright level
+
+BleKeyboard txKey;
+KeyReport txKeyReport;
 
 void setup()
 {
@@ -162,7 +154,7 @@ void setup()
     SD.end();
   }
 
-  bleKey.begin();
+  txKey.begin();
   fnStateInit(); // function state initialize
   dispInit();    // display initialize
   lastKeyInput = millis();
@@ -176,11 +168,11 @@ void loop()
   if (checkInput(current_keys_state))       // check Cardputer key input and get state
   {                                         // if keys input
     if (!specialFnMode(current_keys_state)) // special function mode check
-      bleSend(current_keys_state);          // send data via bluetooth
+      keySend(current_keys_state);          // send data via bluetooth
   }
 
   notifyBleConnect(); // check bluetooth connection
-  powerSaveAndDisp(); // bat.status disp and power save
+  powerSave();        // bat.status disp and power save
   delay(5);
 }
 
@@ -196,7 +188,7 @@ bool checkInput(m5::Keyboard_Class::KeysState &current_keys_state)
     }
     else // All keys are physically released
     {
-      bleKey.releaseAll();
+      txKey.releaseAll();
       dispModsCls();
     }
   }
@@ -213,7 +205,6 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
   // return true: special function executed , false: not exectuted
 
   //  --- input keys status setup  -------------------------
-  uint8_t mods = current_keys.modifiers;
   bool existWord = !current_keys.word.empty();
   uint8_t keyWord = 0;
   if (existWord)
@@ -228,7 +219,7 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
     case '!': // Caps Lock Toggle (fn + '1')
       specialFnProcessed = true;
       capsLock = !capsLock;
-      bleKey.write(KEY_CAPS_LOCK);
+      txKey.write(KEY_CAPS_LOCK);
       break;
     case '2':
     case '@': // Cursor movement Mode Toggle (fn + '2')
@@ -253,20 +244,20 @@ bool specialFnMode(const m5::Keyboard_Class::KeysState &current_keys)
     if (specialFnProcessed)
     {
       dispFnState();
-      bleKey.releaseAll(); // Release all keys/modifiers on the host side
-      dispModsCls();       // Clear modifier key display on the Cardputer side
+      txKey.releaseAll(); // Release all keys/modifiers on the host side
+      dispModsCls();      // Clear modifier key display on the Cardputer side
       return true;
     }
   }
   return false;
 }
 
-void bleSend(const m5::Keyboard_Class::KeysState &current_keys)
+void keySend(const m5::Keyboard_Class::KeysState &current_keys)
 {
-  bleKeyReport = {0};
-  String modsStr = "";
+  txKeyReport = {0};
   uint8_t modifier = 0;
-  String localSendWord = ""; // Use local variable for constructing HID code string
+  string modsStr;    // Buffer for modifier keys string
+  string hidCodeStr; // Buffer for HID codes string, stores " 0xYY 0xZZ..."
 
   // ** modifiers keys(ctrl,shift,alt) and fn **
   //    these keys are used with other key
@@ -291,18 +282,22 @@ void bleSend(const m5::Keyboard_Class::KeysState &current_keys)
     modsStr += "Opt ";
   }
   if (current_keys.fn)
+  {
     modsStr += "Fn ";
+  }
 
-  bleKeyReport.modifiers = modifier;
+  txKeyReport.modifiers = modifier;
   dispModsKeys(modsStr.c_str());
 
   // *****  Regular Character Keys *****
   int count = 0;
+  const uint8_t MAX_SIMULTANEOUS_KEYS = 6; // Max number of keys in HID report
+
   for (auto hidCode : current_keys.hid_keys)
   {
-    char tempBuf[8]; // For " 0xYY" format
     if (count < MAX_SIMULTANEOUS_KEYS)
     {
+      char tempBuf[8]; // For " 0xYY" format, e.g., " 0x1A"
       uint8_t finalHidCode = hidCode;
 
       if (current_keys.fn)
@@ -330,53 +325,37 @@ void bleSend(const m5::Keyboard_Class::KeysState &current_keys)
           finalHidCode = it_general->second;
         }
       }
-      bleKeyReport.keys[count] = finalHidCode;
-      snprintf(tempBuf, sizeof(tempBuf), " 0x%02X", finalHidCode);
-      localSendWord += tempBuf;
+      txKeyReport.keys[count] = finalHidCode;
+      int written = snprintf(tempBuf, sizeof(tempBuf), " 0x%02X", finalHidCode);
+      if (written > 0) // For std::string, just check if snprintf was successful
+      {
+        hidCodeStr += tempBuf;
+      }
       count++;
     }
   }
 
-  // Send keyReport via bluetooth
-  bleKey.sendReport(&bleKeyReport);
+  // Send keyReport to host device
+  txKey.sendReport(&txKeyReport);
 
-  String keysDisplayString = "";
+  string keysDisplayString;
   if (!current_keys.word.empty())
   {
-    keysDisplayString += " ";
-    keysDisplayString += current_keys.word[0];
-    keysDisplayString += " :hid";
+    keysDisplayString = " " + string(1, current_keys.word[0]) + " :hid";
   }
-  else if (!localSendWord.isEmpty())
+  else if (!hidCodeStr.empty())
   {
-    keysDisplayString += " hid";
+    keysDisplayString = " hid";
   }
-  keysDisplayString += localSendWord;
 
-  if (!keysDisplayString.isEmpty())
+  // Append hidCodeStr (HID codes) if there's content and space
+  if (!hidCodeStr.empty())
+  {
+    keysDisplayString += hidCodeStr;
+  }
+  if (!keysDisplayString.empty())
   {
     dispSendKey(keysDisplayString.c_str());
-  }
-}
-
-static unsigned long PREV_BLECHK_TM = 0;
-void notifyBleConnect()
-{
-  const unsigned long BLE_CONNECT_CHECK_INTERVAL_MS = 1000UL;
-  if (millis() < PREV_BLECHK_TM + BLE_CONNECT_CHECK_INTERVAL_MS)
-    return;
-
-  PREV_BLECHK_TM = millis();
-
-  if (bleKey.isConnected() && !bleConnect)
-  {
-    bleConnect = true;
-    dispBleState();
-  }
-  else if (!bleKey.isConnected() && bleConnect)
-  {
-    bleConnect = false;
-    dispBleState();
   }
 }
 
@@ -395,8 +374,8 @@ void dispLx(uint8_t Lx, const char *msg)
   if (Lx >= N_ROWS)
     return;
 
-  M5Cardputer.Display.fillRect(0, Lx * H_CHR, X_WIDTH, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(0, Lx * H_CHR);
+  M5Cardputer.Display.fillRect(0, SC_LINES[Lx], X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(0, SC_LINES[Lx]);
   M5Cardputer.Display.print(msg);
 }
 
@@ -407,8 +386,7 @@ void dispModsKeys(const char *msg)
 
 void dispModsCls()
 { // line4 : modifiers keys disp clear
-  // dispLx(4, "");
-  M5Cardputer.Display.fillRect(0, LINE4, X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.fillRect(0, SC_LINES[4], X_WIDTH, H_CHR, TFT_BLACK);
 }
 
 void dispSendKey(const char *msg)
@@ -423,9 +401,9 @@ void dispSendKey(const char *msg)
 void dispSendKey2(const char *msg)
 { // line5 : other keys (enter,tab,backspace, etc ...) send info
   M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-  char buffer[N_COLS + 1]; // Ensure buffer is large enough
-  snprintf(buffer, sizeof(buffer), " %s", msg);
-  dispLx(5, buffer);
+  string temp_str = " ";
+  temp_str += msg;
+  dispLx(5, temp_str.c_str());
 #ifdef DEBUG
   Serial.println(msg); // msg is already const char*
 #endif
@@ -440,10 +418,14 @@ void dispFnState()
   const char *StCaps[] = {"unlock", " lock"};
   const char *StEditMode[] = {"off", " on"};
 
-  M5Cardputer.Display.fillRect(0, LINE3, X_WIDTH, H_CHR, TFT_BLACK);
+  const int COL_CAPSLOCK = 1;    // "Cap" display start position
+  const int COL_CURSORMODE = 10; // "CurM" display start position
+  const int COL_APO = 15;        // "Apo" display start position
+
+  M5Cardputer.Display.fillRect(0, SC_LINES[3], X_WIDTH, H_CHR, TFT_BLACK);
 
   // capsLock state
-  M5Cardputer.Display.setCursor(W_CHR * COL_CAPSLOCK, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * COL_CAPSLOCK, SC_LINES[3]);
   if (capsLock)
   {
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -456,7 +438,7 @@ void dispFnState()
   }
 
   // Cursor movement mode state
-  M5Cardputer.Display.setCursor(W_CHR * COL_CURSORMODE, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * COL_CURSORMODE, SC_LINES[3]);
   if (cursMode)
   {
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -470,29 +452,8 @@ void dispFnState()
 
   // Auto PowerOff time
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * COL_APO, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * COL_APO, SC_LINES[3]);
   M5Cardputer.Display.print(apoSettings[apoTmIndex].timeString);
-}
-
-void dispBleState()
-{ // line0: software name and BLE connect information
-  //----01234567890123456789--
-  // L0_"- tiny bleKeyboard -"-
-  //----01234567890123456789--
-
-  M5Cardputer.Display.fillRect(0, LINE0, X_WIDTH, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(0, LINE0);
-  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.print("- tiny ");
-
-  if (bleConnect)
-    M5Cardputer.Display.setTextColor(TFT_BLUE, TFT_BLACK);
-  else
-    M5Cardputer.Display.setTextColor(TFT_RED, TFT_BLACK);
-  M5Cardputer.Display.print("ble");
-
-  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.print("Keyboard -");
 }
 
 void dispInit()
@@ -510,14 +471,14 @@ void dispInit()
   const char *L1Str = "            bat.   %";
   //-------------------"01234567890123456789"------------------;
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  dispLx(1, L1Str); // L1Str is now const char*
+  dispLx(1, L1Str);
   dispBatteryLevel();
 
   //  L2 : Fn1 to Fn3 title -----------------------------------
   //-------------------"01234567890123456789"------------------;
   //           L2Str = "fn1:Cap 2:CurM 3:Apo";
   //-------------------"01234567890123456789"------------------;
-  M5Cardputer.Display.setCursor(0, LINE2);
+  M5Cardputer.Display.setCursor(0, SC_LINES[2]);
   M5Cardputer.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
   M5Cardputer.Display.print("fn1:");
   M5Cardputer.Display.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -614,12 +575,10 @@ void m5stack_begin()
   Y_HEIGHT = M5Cardputer.Display.height();
   W_CHR = X_WIDTH / N_COLS;  // width of 1 character
   H_CHR = Y_HEIGHT / N_ROWS; // height of 1 character
-  LINE0 = 0 * H_CHR;
-  LINE1 = 1 * H_CHR;
-  LINE2 = 2 * H_CHR;
-  LINE3 = 3 * H_CHR;
-  LINE4 = 4 * H_CHR;
-  LINE5 = 5 * H_CHR;
+  for (int i = 0; i < N_ROWS; ++i)
+  {
+    SC_LINES[i] = i * H_CHR;
+  }
 
   // display setup at startup
   M5Cardputer.Display.fillScreen(TFT_BLACK);
@@ -643,7 +602,7 @@ void m5stack_begin()
 }
 
 // ------------------------------------------------------------------------
-// SDU_lobby :  lobby for SD-Updater
+// SDU_lobby :  lobby for M5Stack-SD-Updater
 // ------------------------------------------------------------------------
 // load '/menu.bin' on SD, if key'a' pressed at booting.
 // 'menu.bin' for Cardputer is involved in BINS folder at this github site
@@ -666,19 +625,270 @@ void SDU_lobby()
 
 bool SD_begin()
 {
-  int i = 0;
-  while (!SD.begin(M5.getPin(m5::pin_name_t::sd_spi_ss), SPI2) && i < 10)
+  for (int i = 0; i < 10; ++i)
   {
+    if (SD.begin(M5.getPin(m5::pin_name_t::sd_spi_ss), SPI2))
+    {
+      return true; // Success
+    }
     delay(500);
-    i++;
   }
-  if (i >= 10)
+  Serial.println("ERR: SD begin fail...");
+  SD.end();
+  return false; // Failed after retries
+}
+
+void fnStateInit()
+{
+  // capsLock state is always 'false' start
+  capsLock = false;
+
+  // cursor movement mode state is recovered if waking up from DeepSleep
+  cursMode = false;
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT0)
+  { // Read NVS data if waking up from DeepSleep
+#ifdef DEBUG
+    Serial.println("Wakeup from DeepSleep");
+#endif
+    uint8_t nvmData;
+    if (rdNVS(CURM_TITLE, nvmData))
+    {
+      if (nvmData == CUSRM_ON)
+        cursMode = true;
+    }
+  }
+  else // PowerOn: did not wake up from DeepSleep
   {
-    Serial.println("ERR: SD begin fail...");
-    SD.end();
-    return false;
+#ifdef DEBUG
+    Serial.println("POWER ON");
+#endif
+    ;
   }
-  return true;
+  // -----------------------------------------------------
+
+  // Auto PowerOff state is always restored from NVS at start
+  apoTmIndex = apoTmDefault;
+  uint8_t nvmData;
+  if (rdNVS(APO_TITLE, nvmData))
+    apoTmIndex = nvmData;
+  if (apoTmIndex > apoTmMax)
+    apoTmIndex = apoTmDefault;
+
+  apoTmout = static_cast<unsigned long>(apoSettings[apoTmIndex].timeMinutes) * 60 * 1000L;
+  wrtNVS(APO_TITLE, apoTmIndex);
+#ifdef DEBUG
+  Serial.print("autoPowerOff: ");
+  Serial.println(apoSettings[apoTmIndex].timeString);
+  Serial.print("apoTmout: ");
+  Serial.println(apoTmout, DEC);
+#endif
+}
+
+enum PowerSaveFSM
+{
+  PS_NORMAL,
+  PS_LOW_BRIGHT,
+  PS_WARN_APO,
+  PS_LOW_BATTERY_WARN
+};
+static PowerSaveFSM psState = PS_NORMAL;
+
+static unsigned long prev_btlvl_disp_tm = 0L;
+static unsigned long prev_warn_disp_tm = 0L;
+static bool warnDispFlag = true;
+static unsigned long lowBatteryWarnStartTimeMs = 0;
+
+void powerSave()
+{
+  const unsigned long BATLVL_DISP_INTERVAL_MS = 5 * 1000UL;
+  const unsigned long LOW_BATTERY_WARN_BLINK_DURATION_MS = 30 * 1000UL;
+
+  const unsigned long LOW_BRIGHT_TIMEOUT_MS = 40 * 1000UL;
+  const unsigned long APO_WARN_PERIOD_MS = 15 * 1000UL;
+  const unsigned long WARN_BLINK_INTERVAL_MS = 500UL;
+  unsigned long currentTime = millis(); // Get current time once
+  unsigned long timeSinceLastInput = currentTime - lastKeyInput;
+
+  if (currentTime - prev_btlvl_disp_tm >= BATLVL_DISP_INTERVAL_MS)
+  {
+    prev_btlvl_disp_tm = currentTime;
+    dispBatteryLevel(); // This will update consecutiveLowBatteryCount
+  }
+
+  // Check for Low Battery condition first (highest priority)
+  if (consecutiveLowBatteryCount >= LOW_BATTERY_CONSECUTIVE_READINGS)
+  {
+    if (psState != PS_LOW_BATTERY_WARN)
+    {
+      psState = PS_LOW_BATTERY_WARN;
+      lowBatteryWarnStartTimeMs = currentTime;
+      warnDispFlag = true;                              // To show message first
+      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Ensure warning is visible
+      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+      // -------"01234567890123456789"--
+      dispLx(4, "    LOW BATTERY !!  ");
+      // -------"01234567890123456789"--
+      prev_warn_disp_tm = currentTime; // Reset blink timer for this new warning
+    }
+
+    // Handle blinking and eventual deep sleep for low battery
+    if (currentTime >= lowBatteryWarnStartTimeMs + LOW_BATTERY_WARN_BLINK_DURATION_MS)
+    {
+      goDeepSleep(); // Enter deep sleep after warning duration
+    }
+    else
+    {
+      // Blinking logic for "LOW BATTERY !!"
+      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
+      {
+        prev_warn_disp_tm = currentTime;
+        warnDispFlag = !warnDispFlag;
+        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        dispLx(4, warnDispFlag ? "    LOW BATTERY !!  " : "");
+      }
+    }
+    return; // Low battery handling takes precedence over other power saving modes
+  }
+
+  if (timeSinceLastInput < LOW_BRIGHT_TIMEOUT_MS)
+  { // Still within normal active period
+    if (psState != PS_NORMAL)
+    {
+      // If returning to normal from any other state (low bright, APO warn)
+      psState = PS_NORMAL;
+      dispInit(); // Restore full display, normal brightness, and clear any previous warnings
+    }
+    return;
+  }
+
+  // LOW_BRIGHT_TIMEOUT_MS has passed
+  if (apoTmIndex == apoTmMax) // APO is "off"
+  {
+    // --- If APO is "off",  APO is disable  ---
+    // no power save function, not need dimming,warining,sleeping
+    return;
+  }
+
+  // APO is enabled, and LOW_BRIGHT_TIMEOUT_MS has passed.
+  // Proceed with dimming, warning, and sleeping logic.
+  if (psState == PS_NORMAL)
+  {
+    // Transition from Normal to Low Bright as LOW_BRIGHT_TIMEOUT_MS has passed and APO is on
+    psState = PS_LOW_BRIGHT;
+    M5Cardputer.Display.setBrightness(BRIGHT_LOW);
+  }
+
+  if (psState == PS_LOW_BRIGHT)
+  {
+    // Check if it's time to transition to warning state
+    if (timeSinceLastInput >= (apoTmout - APO_WARN_PERIOD_MS))
+    {
+      psState = PS_WARN_APO;
+      prev_warn_disp_tm = currentTime;                  // Initialize for blinking
+      warnDispFlag = true;                              // Show warning message first
+      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Restore brightness for warning
+      // Display initial warning message
+      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+      dispLx(4, "     SLEEP TIME     ");
+    }
+  }
+
+  if (psState == PS_WARN_APO)
+  {
+    if (timeSinceLastInput >= apoTmout)
+    { // APO timeout reached
+      goDeepSleep();
+      // esp_deep_sleep_start() does not return
+    }
+    else
+    {
+      // Still in warning period, blink the message
+      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
+      {
+        prev_warn_disp_tm = currentTime;
+        warnDispFlag = !warnDispFlag;
+        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        dispLx(4, warnDispFlag ? "     SLEEP TIME     " : "");
+      }
+    }
+  }
+}
+
+void dispBatteryLevel()
+{
+  // Line1 : battery level display
+  //---- 01234567890123456789---
+  // L1_"            bat.100%"--
+  //---- 01234567890123456789---
+  const int COL_BATVAL = 16;                      // Battery value display start position
+  const int WIDTH_BATVAL_LEN = 3;                 // Battery value display length
+  const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
+
+  M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, SC_LINES[1], W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(W_CHR * COL_BATVAL, SC_LINES[1]);
+  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  uint8_t batLvl = (uint8_t)M5.Power.getBatteryLevel();  // Get battery level
+  char batLvlBuf[4];                                     // Buffer for "XXX" + null terminator
+  snprintf(batLvlBuf, sizeof(batLvlBuf), "%3u", batLvl); // %3u pads with spaces if less than 3 digits
+  M5Cardputer.Display.print(batLvlBuf);
+
+  txKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
+
+  // Update consecutive low battery count
+  if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD)
+  {
+    if (consecutiveLowBatteryCount < LOW_BATTERY_CONSECUTIVE_READINGS)
+    { // Avoid overflow if already at max
+      consecutiveLowBatteryCount++;
+    }
+  }
+  else
+  {
+    consecutiveLowBatteryCount = 0; // Reset if battery level is acceptable
+  }
+}
+
+static unsigned long PREV_BLECHK_TM = 0;
+void notifyBleConnect()
+{
+  const unsigned long BLE_CONNECT_CHECK_INTERVAL_MS = 1000UL;
+  if (millis() < PREV_BLECHK_TM + BLE_CONNECT_CHECK_INTERVAL_MS)
+    return;
+
+  PREV_BLECHK_TM = millis();
+
+  if (txKey.isConnected() && !bleConnect)
+  {
+    bleConnect = true;
+    dispBleState();
+  }
+  else if (!txKey.isConnected() && bleConnect)
+  {
+    bleConnect = false;
+    dispBleState();
+  }
+}
+
+void dispBleState()
+{ // line0: software name and BLE connect information
+  //----01234567890123456789--
+  // L0_"- tiny bleKeyboard -"-
+  //----01234567890123456789--
+
+  M5Cardputer.Display.fillRect(0, SC_LINES[0], X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(0, SC_LINES[0]);
+  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5Cardputer.Display.print("- tiny ");
+
+  if (bleConnect)
+    M5Cardputer.Display.setTextColor(TFT_BLUE, TFT_BLACK);
+  else
+    M5Cardputer.Display.setTextColor(TFT_RED, TFT_BLACK);
+  M5Cardputer.Display.print("ble");
+
+  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5Cardputer.Display.print("Keyboard -");
 }
 
 void goDeepSleep()
@@ -696,18 +906,18 @@ void goDeepSleep()
   // ---01234567890123456789--
   M5Cardputer.Display.fillScreen(TFT_BLACK); // clear screen
   M5Cardputer.Display.setTextColor(TFT_RED, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * 3, LINE1);
+  M5Cardputer.Display.setCursor(W_CHR * 3, SC_LINES[1]);
   M5Cardputer.Display.print("Entering Sleep");
 
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * 1, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * 1, SC_LINES[3]);
   M5Cardputer.Display.print("Press");
   M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
   M5Cardputer.Display.print("  SPACE  ");
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5Cardputer.Display.print("key");
 
-  M5Cardputer.Display.setCursor(W_CHR * 5, LINE4);
+  M5Cardputer.Display.setCursor(W_CHR * 5, SC_LINES[4]);
   M5Cardputer.Display.print("to wakeup...");
 
 #ifdef DEBUG
@@ -856,52 +1066,6 @@ void goDeepSleep()
   // **** NEVER RETURN *****
 }
 
-void fnStateInit()
-{
-  // capsLock state is always 'false' start
-  capsLock = false;
-
-  // cursor movement mode state is recovered if waking up from DeepSleep
-  cursMode = false;
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT0)
-  { // Read NVS data if waking up from DeepSleep
-#ifdef DEBUG
-    Serial.println("Wakeup from DeepSleep");
-#endif
-    uint8_t nvmData;
-    if (rdNVS(CURM_TITLE, nvmData))
-    {
-      if (nvmData == CUSRM_ON)
-        cursMode = true;
-    }
-  }
-  else // PowerOn: did not wake up from DeepSleep
-  {
-#ifdef DEBUG
-    Serial.println("POWER ON");
-#endif
-    ;
-  }
-  // -----------------------------------------------------
-
-  // Auto PowerOff state is always restored from NVS at start
-  apoTmIndex = apoTmDefault;
-  uint8_t nvmData;
-  if (rdNVS(APO_TITLE, nvmData))
-    apoTmIndex = nvmData;
-  if (apoTmIndex > apoTmMax)
-    apoTmIndex = apoTmDefault;
-
-  apoTmout = static_cast<unsigned long>(apoSettings[apoTmIndex].timeMinutes) * 60 * 1000L;
-  wrtNVS(APO_TITLE, apoTmIndex);
-#ifdef DEBUG
-  Serial.print("autoPowerOff: ");
-  Serial.println(apoSettings[apoTmIndex].timeString);
-  Serial.print("apoTmout: ");
-  Serial.println(apoTmout, DEC);
-#endif
-}
-
 bool wrtNVS(const char *title, uint8_t data)
 {
   if (ESP_OK == nvs_open(NVS_SETTING, NVS_READWRITE, &nvs))
@@ -922,161 +1086,4 @@ bool rdNVS(const char *title, uint8_t &data)
     return true;
   }
   return false;
-}
-
-enum PowerSaveFSM
-{
-  PS_NORMAL,
-  PS_LOW_BRIGHT,
-  PS_WARN_APO,
-  PS_LOW_BATTERY_WARN
-};
-static PowerSaveFSM psState = PS_NORMAL;
-
-void powerSaveAndDisp()
-{
-  const unsigned long BATLVL_DISP_INTERVAL_MS = 5 * 1000UL;
-  const unsigned long LOW_BATTERY_WARN_BLINK_DURATION_MS = 30 * 1000UL;
-
-  const unsigned long LOW_BRIGHT_TIMEOUT_MS = 40 * 1000UL;
-  const unsigned long APO_WARN_PERIOD_MS = 15 * 1000UL;
-  const unsigned long WARN_BLINK_INTERVAL_MS = 500UL;
-  unsigned long currentTime = millis(); // Get current time once
-  unsigned long timeSinceLastInput = currentTime - lastKeyInput;
-
-  if (currentTime > prev_btlvl_disp_tm + BATLVL_DISP_INTERVAL_MS)
-  {
-    prev_btlvl_disp_tm = currentTime;
-    dispBatteryLevel(); // This will update consecutiveLowBatteryCount
-  }
-
-  // Check for Low Battery condition first (highest priority)
-  if (consecutiveLowBatteryCount >= LOW_BATTERY_CONSECUTIVE_READINGS)
-  {
-    if (psState != PS_LOW_BATTERY_WARN)
-    {
-      psState = PS_LOW_BATTERY_WARN;
-      lowBatteryWarnStartTimeMs = currentTime;
-      warnDispFlag = true;                              // To show message first
-      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Ensure warning is visible
-      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-      // -------"01234567890123456789"--
-      dispLx(4, "    LOW BATTERY !!  ");
-      // -------"01234567890123456789"--
-      prev_warn_disp_tm = currentTime; // Reset blink timer for this new warning
-    }
-
-    // Handle blinking and eventual deep sleep for low battery
-    if (currentTime >= lowBatteryWarnStartTimeMs + LOW_BATTERY_WARN_BLINK_DURATION_MS)
-    {
-      goDeepSleep(); // Enter deep sleep after warning duration
-    }
-    else
-    {
-      // Blinking logic for "LOW BATTERY !!"
-      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
-      {
-        prev_warn_disp_tm = currentTime;
-        warnDispFlag = !warnDispFlag;
-        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        dispLx(4, warnDispFlag ? "    LOW BATTERY !!  " : "");
-      }
-    }
-    return; // Low battery handling takes precedence over other power saving modes
-  }
-
-  if (timeSinceLastInput < LOW_BRIGHT_TIMEOUT_MS)
-  { // Still within normal active period
-    if (psState != PS_NORMAL)
-    {
-      // If returning to normal from any other state (low bright, APO warn)
-      psState = PS_NORMAL;
-      dispInit(); // Restore full display, normal brightness, and clear any previous warnings
-    }
-    return;
-  }
-
-  // LOW_BRIGHT_TIMEOUT_MS has passed
-  if (apoTmIndex == apoTmMax) // APO is "off"
-  {
-    // --- If APO is "off",  APO is disable  ---
-    // no power save function, not need dimming,warining,sleeping
-    return;
-  }
-
-  // APO is enabled, and LOW_BRIGHT_TIMEOUT_MS has passed.
-  // Proceed with dimming, warning, and sleeping logic.
-  if (psState == PS_NORMAL)
-  {
-    // Transition from Normal to Low Bright as LOW_BRIGHT_TIMEOUT_MS has passed and APO is on
-    psState = PS_LOW_BRIGHT;
-    M5Cardputer.Display.setBrightness(BRIGHT_LOW);
-  }
-
-  if (psState == PS_LOW_BRIGHT)
-  {
-    // Check if it's time to transition to warning state
-    if (timeSinceLastInput >= (apoTmout - APO_WARN_PERIOD_MS))
-    {
-      psState = PS_WARN_APO;
-      prev_warn_disp_tm = currentTime;                  // Initialize for blinking
-      warnDispFlag = true;                              // Show warning message first
-      M5Cardputer.Display.setBrightness(BRIGHT_NORMAL); // Restore brightness for warning
-      // Display initial warning message
-      M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-      dispLx(4, "     SLEEP TIME     ");
-    }
-  }
-
-  if (psState == PS_WARN_APO)
-  {
-    if (timeSinceLastInput >= apoTmout)
-    { // APO timeout reached
-      goDeepSleep();
-      // esp_deep_sleep_start() does not return
-    }
-    else
-    {
-      // Still in warning period, blink the message
-      if (currentTime >= prev_warn_disp_tm + WARN_BLINK_INTERVAL_MS)
-      {
-        prev_warn_disp_tm = currentTime;
-        warnDispFlag = !warnDispFlag;
-        M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        dispLx(4, warnDispFlag ? "     SLEEP TIME     " : "");
-      }
-    }
-  }
-}
-
-void dispBatteryLevel()
-{
-
-  // Line1 : battery level display
-  //---- 01234567890123456789---
-  // L1_"            bat.100%"--
-  //---- 01234567890123456789---
-  M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, LINE1, W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * COL_BATVAL, LINE1);
-  M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  uint8_t batLvl = (uint8_t)M5.Power.getBatteryLevel();  // Get battery level
-  char batLvlBuf[4];                                     // Buffer for "XXX" + null terminator
-  snprintf(batLvlBuf, sizeof(batLvlBuf), "%3u", batLvl); // %3u pads with spaces if less than 3 digits
-  M5Cardputer.Display.print(batLvlBuf);
-
-  bleKey.setBatteryLevel(batLvl); // send battery level via Bluetooth
-
-  // Update consecutive low battery count
-  if (batLvl <= LOW_BATTERY_LEVEL_THRESHOLD)
-  {
-    if (consecutiveLowBatteryCount < LOW_BATTERY_CONSECUTIVE_READINGS)
-    { // Avoid overflow if already at max
-      consecutiveLowBatteryCount++;
-    }
-  }
-  else
-  {
-    consecutiveLowBatteryCount = 0; // Reset if battery level is acceptable
-  }
 }
