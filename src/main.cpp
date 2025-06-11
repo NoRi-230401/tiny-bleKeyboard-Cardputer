@@ -10,9 +10,21 @@
 #include <M5Cardputer.h>
 #include <M5StackUpdater.h>
 #include <map>
-#include <nvs.h>
-#include <BleKeyboard.h>
+#include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
 using std::string;
+
+//----- `bleKeyboad` only (no `usbKeyboad`) -----------------
+#include <BleKeyboard.h>
+#include <nvs.h>
+#include <esp_sleep.h>     // Added for Deep Sleep
+#include <driver/gpio.h>   // Added for gpio_pullup_en
+#include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
+void notifyBleConnect();
+void dispBleState();
+void goDeepSleep();
+bool wrtNVS(const char *title, uint8_t data);
+bool rdNVS(const char *title, uint8_t &data);
+// -----------------------------------------------------------
 
 void setup();
 void loop();
@@ -32,17 +44,6 @@ bool SD_begin();
 void fnStateInit();
 void powerSave();
 void dispBatteryLevel();
-//----- `bleKeyboad` only (no `usbKeyboad`) -----------------
-#include <esp_sleep.h>     // Added for Deep Sleep
-#include <driver/gpio.h>   // Added for gpio_pullup_en
-#include <WiFi.h>          // Added for WiFi.mode(WIFI_OFF)
-#include <driver/rtc_io.h> // Added for rtc_gpio_pullup_en
-void notifyBleConnect();
-void dispBleState();
-void goDeepSleep();
-bool wrtNVS(const char *title, uint8_t data);
-bool rdNVS(const char *title, uint8_t &data);
-// -----------------------------------------------------------
 
 // ----- Cardputer Specific disp paramaters -----------
 const int32_t N_COLS = 20; // columns
@@ -50,7 +51,7 @@ const int32_t N_ROWS = 6;  // rows
 //---- caluculated in m5stackc_begin() ----------------
 static int32_t X_WIDTH, Y_HEIGHT;
 static int32_t W_CHR, H_CHR;
-static int32_t LINE0, LINE1, LINE2, LINE3, LINE4, LINE5;
+static int32_t SC_LINES[N_ROWS]; // Array to store Y coordinates of each line
 
 //-------------------------------------
 static SPIClass SPI2;
@@ -373,8 +374,8 @@ void dispLx(uint8_t Lx, const char *msg)
   if (Lx >= N_ROWS)
     return;
 
-  M5Cardputer.Display.fillRect(0, Lx * H_CHR, X_WIDTH, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(0, Lx * H_CHR);
+  M5Cardputer.Display.fillRect(0, SC_LINES[Lx], X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(0, SC_LINES[Lx]);
   M5Cardputer.Display.print(msg);
 }
 
@@ -385,8 +386,7 @@ void dispModsKeys(const char *msg)
 
 void dispModsCls()
 { // line4 : modifiers keys disp clear
-  // dispLx(4, "");
-  M5Cardputer.Display.fillRect(0, LINE4, X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.fillRect(0, SC_LINES[4], X_WIDTH, H_CHR, TFT_BLACK);
 }
 
 void dispSendKey(const char *msg)
@@ -422,10 +422,10 @@ void dispFnState()
   const int COL_CURSORMODE = 10; // "CurM" display start position
   const int COL_APO = 15;        // "Apo" display start position
 
-  M5Cardputer.Display.fillRect(0, LINE3, X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.fillRect(0, SC_LINES[3], X_WIDTH, H_CHR, TFT_BLACK);
 
   // capsLock state
-  M5Cardputer.Display.setCursor(W_CHR * COL_CAPSLOCK, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * COL_CAPSLOCK, SC_LINES[3]);
   if (capsLock)
   {
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -438,7 +438,7 @@ void dispFnState()
   }
 
   // Cursor movement mode state
-  M5Cardputer.Display.setCursor(W_CHR * COL_CURSORMODE, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * COL_CURSORMODE, SC_LINES[3]);
   if (cursMode)
   {
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -452,7 +452,7 @@ void dispFnState()
 
   // Auto PowerOff time
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * COL_APO, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * COL_APO, SC_LINES[3]);
   M5Cardputer.Display.print(apoSettings[apoTmIndex].timeString);
 }
 
@@ -478,7 +478,7 @@ void dispInit()
   //-------------------"01234567890123456789"------------------;
   //           L2Str = "fn1:Cap 2:CurM 3:Apo";
   //-------------------"01234567890123456789"------------------;
-  M5Cardputer.Display.setCursor(0, LINE2);
+  M5Cardputer.Display.setCursor(0, SC_LINES[2]);
   M5Cardputer.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
   M5Cardputer.Display.print("fn1:");
   M5Cardputer.Display.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -575,12 +575,10 @@ void m5stack_begin()
   Y_HEIGHT = M5Cardputer.Display.height();
   W_CHR = X_WIDTH / N_COLS;  // width of 1 character
   H_CHR = Y_HEIGHT / N_ROWS; // height of 1 character
-  LINE0 = 0 * H_CHR;
-  LINE1 = 1 * H_CHR;
-  LINE2 = 2 * H_CHR;
-  LINE3 = 3 * H_CHR;
-  LINE4 = 4 * H_CHR;
-  LINE5 = 5 * H_CHR;
+  for (int i = 0; i < N_ROWS; ++i)
+  {
+    SC_LINES[i] = i * H_CHR;
+  }
 
   // display setup at startup
   M5Cardputer.Display.fillScreen(TFT_BLACK);
@@ -627,19 +625,17 @@ void SDU_lobby()
 
 bool SD_begin()
 {
-  int i = 0;
-  while (!SD.begin(M5.getPin(m5::pin_name_t::sd_spi_ss), SPI2) && i < 10)
+  for (int i = 0; i < 10; ++i)
   {
+    if (SD.begin(M5.getPin(m5::pin_name_t::sd_spi_ss), SPI2))
+    {
+      return true; // Success
+    }
     delay(500);
-    i++;
   }
-  if (i >= 10)
-  {
-    Serial.println("ERR: SD begin fail...");
-    SD.end();
-    return false;
-  }
-  return true;
+  Serial.println("ERR: SD begin fail...");
+  SD.end();
+  return false; // Failed after retries
 }
 
 void fnStateInit()
@@ -828,8 +824,8 @@ void dispBatteryLevel()
   const int WIDTH_BATVAL_LEN = 3;                 // Battery value display length
   const uint8_t LOW_BATTERY_LEVEL_THRESHOLD = 10; // % : define LOW BATTERY lvl
 
-  M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, LINE1, W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * COL_BATVAL, LINE1);
+  M5Cardputer.Display.fillRect(W_CHR * COL_BATVAL, SC_LINES[1], W_CHR * WIDTH_BATVAL_LEN, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(W_CHR * COL_BATVAL, SC_LINES[1]);
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 
   uint8_t batLvl = (uint8_t)M5.Power.getBatteryLevel();  // Get battery level
@@ -880,8 +876,8 @@ void dispBleState()
   // L0_"- tiny bleKeyboard -"-
   //----01234567890123456789--
 
-  M5Cardputer.Display.fillRect(0, LINE0, X_WIDTH, H_CHR, TFT_BLACK);
-  M5Cardputer.Display.setCursor(0, LINE0);
+  M5Cardputer.Display.fillRect(0, SC_LINES[0], X_WIDTH, H_CHR, TFT_BLACK);
+  M5Cardputer.Display.setCursor(0, SC_LINES[0]);
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5Cardputer.Display.print("- tiny ");
 
@@ -910,18 +906,18 @@ void goDeepSleep()
   // ---01234567890123456789--
   M5Cardputer.Display.fillScreen(TFT_BLACK); // clear screen
   M5Cardputer.Display.setTextColor(TFT_RED, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * 3, LINE1);
+  M5Cardputer.Display.setCursor(W_CHR * 3, SC_LINES[1]);
   M5Cardputer.Display.print("Entering Sleep");
 
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5Cardputer.Display.setCursor(W_CHR * 1, LINE3);
+  M5Cardputer.Display.setCursor(W_CHR * 1, SC_LINES[3]);
   M5Cardputer.Display.print("Press");
   M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
   M5Cardputer.Display.print("  SPACE  ");
   M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5Cardputer.Display.print("key");
 
-  M5Cardputer.Display.setCursor(W_CHR * 5, LINE4);
+  M5Cardputer.Display.setCursor(W_CHR * 5, SC_LINES[4]);
   M5Cardputer.Display.print("to wakeup...");
 
 #ifdef DEBUG
